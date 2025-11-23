@@ -42,9 +42,8 @@ COPY pyproject.toml poetry.lock ./
 
 RUN poetry install --no-root --only main
 
-
 # Copy the actual application code
-COPY /app /db /tests/ ./
+COPY src/ ./src
 
 
 # ---- Final Image ----
