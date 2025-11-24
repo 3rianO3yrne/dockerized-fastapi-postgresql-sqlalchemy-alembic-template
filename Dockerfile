@@ -1,55 +1,72 @@
 # syntax=docker/dockerfile:1
 
-# ---- Base ----
+# ============================
+# Python Base Stage
+# ============================
 ARG PYTHON_VERSION=3.12
-FROM python:${PYTHON_VERSION}-slim AS base
+FROM python:${PYTHON_VERSION}-slim AS python-base
 
-ENV POETRY_VERSION=2.2.1 \
-    PYTHONUNBUFFERED=1 \
+ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
+    POETRY_VERSION=2.2.1 \
     POETRY_HOME="/opt/poetry" \
     POETRY_VIRTUALENVS_IN_PROJECT=true \
     POETRY_NO_INTERACTION=1 \
-    POETRY_CACHE_DIR="/cache/pypoetry" \
     PYSETUP_PATH="/opt/pysetup" \
-    VENV_PATH="/opt/pysetup/.venv" \
-    PIPX_HOME="/opt/pipx"
-    
-# ENV PATH="$POETRY_HOME/bin:$VENV_PATH/bin:$POETRY_CACHE_DIR/bin:$PATH"
-ENV PATH="/root/.local/bin:${PATH}"
+    VENV_PATH="/opt/pysetup/.venv" 
+
+ENV PATH="$POETRY_HOME/bin:$VENV_PATH/bin:$PATH"
+
+# ============================
+# Dependencies Base Stage
+# ============================
+FROM python-base AS dependencies-base
 
 # Install dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get --no-install-recommends install -y \
     build-essential \
     curl \
-    pipx \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pipx install "poetry==$POETRY_VERSION" --global
+# use official poetry install method - respects $POETRY_VERSION & $POETRY_HOME
+RUN curl -sSL https://install.python-poetry.org | python3 -
 
-# ---- build ----
-FROM base AS build
+RUN poetry --version
+
+# ============================
+# Build Stage
+# ============================
+FROM dependencies-base AS build
 
 WORKDIR $PYSETUP_PATH
 
 COPY poetry.lock pyproject.toml ./
 
-RUN --mount=type=cache,target=$PATH \
+RUN --mount=type=cache,target=/root/.cache/pypoetry \
     poetry install --no-root
 
-COPY . .
+# ============================
+# Final Stage
+# ============================
+FROM python-base AS final
 
-# ---- Final Image ----
-FROM python:${PYTHON_VERSION}-slim AS final
+WORKDIR /code
 
 # Create a non-privileged user that the app will run under.
-RUN groupadd -g 1001 appgroup && \
-    useradd -u 1001 -g appgroup -m -d /home/appuser -s /bin/bash appuser
+ARG UID=10001
+RUN adduser \
+    --disabled-password \
+    --gecos "" \
+    --home "/nonexistent" \
+    --shell "/sbin/nologin" \
+    --no-create-home \
+    --uid "${UID}" \
+    appuser
 
-WORKDIR /app
-
-COPY --from=build --chown=appuser:appgroup /opt/pysetup/.venv /opt/pysetup/.venv
-COPY --from=build --chown=appuser:appgroup /opt/pysetup/ ./
+# Copy virtual environment from build stage
+COPY --from=build --chown=appuser:appgroup $PYSETUP_PATH $PYSETUP_PATH
 
 # Switch to the non-privileged user to run the application.
 USER appuser
@@ -57,8 +74,7 @@ USER appuser
 # Copy the source code into the container.
 COPY . .
 
-ENV PATH="/app/.venv/bin:$PATH"
 EXPOSE 8000
 ENTRYPOINT []
 
-CMD ["fastapi", "run",  "src/app/main.py",  "--host", "0.0.0.0",  "--port", "8000"]
+CMD ["fastapi", "run",  "app/main.py",  "--host", "0.0.0.0",  "--port", "8000"]
